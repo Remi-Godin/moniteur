@@ -8,7 +8,7 @@ use tracing::{Instrument, error, info_span, instrument};
 
 pub use moniteur_macros::*;
 
-pub trait Worker: Send + Sync + 'static {
+pub trait Worker: Send + 'static {
     /// Returns the name of the worker
     fn name(&self) -> &str;
 
@@ -22,7 +22,7 @@ pub trait Worker: Send + Sync + 'static {
     fn reset(&mut self) -> impl Future<Output = Result<()>> + Send;
 }
 
-pub trait WorkerDispatcher: Send + Sync + 'static {
+pub trait WorkerDispatcher: Send + 'static {
     fn name(&self) -> &str;
     fn init(&mut self) -> impl Future<Output = Result<()>> + Send;
     fn run(&mut self) -> impl Future<Output = Result<()>> + Send;
@@ -71,9 +71,9 @@ impl Default for RetryPolicy {
 
 #[derive(Default, Clone)]
 pub struct WorkerStatus {
-    worker_state: WorkerState,
-    generation: usize,
-    last_start: Option<Instant>,
+    pub worker_state: WorkerState,
+    pub generation: usize,
+    pub last_start: Option<Instant>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -102,6 +102,7 @@ impl Display for WorkerState {
 }
 
 pub struct WorkerContext<D> {
+    label: String,
     dispatcher: D,
     status_tx: watch::Sender<WorkerStatus>,
 }
@@ -111,14 +112,36 @@ impl<D: WorkerDispatcher> WorkerContext<D> {
     pub fn new(dispatcher: D) -> Self {
         let (status_tx, _status_rx) = watch::channel(WorkerStatus::default());
         Self {
+            label: dispatcher.name().to_string(),
             dispatcher,
             status_tx,
         }
     }
 
+    pub fn subscribe_to_status(&self) -> watch::Receiver<WorkerStatus> {
+        self.status_tx.subscribe()
+    }
+}
+
+/// The `Supervisor` takes a list of `WorkerContext`, a set of `SupervisorPolicies`, and once
+/// `start()` is called, will run the workers as defined.
+pub struct Supervisor<D: WorkerDispatcher> {
+    pub label: String,
+    pub policies: SupervisorPolicies,
+    pub undispatched_workers: Vec<WorkerContext<D>>,
+    pub dispatched_workers: Vec<WorkerHandle>,
+}
+
+pub struct WorkerHandle {
+    pub label: String,
+    pub task_handle: JoinHandle<Result<()>>,
+    pub status_rx: watch::Receiver<WorkerStatus>,
+}
+
+impl WorkerHandle {
     /// Waits for the worker to be in the given `WorkerState`
     pub async fn wait_for_state(&self, state: WorkerState) {
-        let mut status_rx = self.status_tx.subscribe();
+        let mut status_rx = self.status_rx.clone();
         status_rx.mark_changed();
         while status_rx.changed().await.is_ok() {
             let curr = status_rx.borrow_and_update();
@@ -135,7 +158,7 @@ impl<D: WorkerDispatcher> WorkerContext<D> {
 
     /// Immediately returns `true` if the worker is in the `Running` state
     pub fn is_running(&self) -> bool {
-        self.status_tx.borrow().worker_state == WorkerState::Running
+        self.status_rx.borrow().worker_state == WorkerState::Running
     }
 
     /// Waits for the worker to be in the `Failed` state
@@ -145,22 +168,8 @@ impl<D: WorkerDispatcher> WorkerContext<D> {
 
     /// Immediately returns `true` if the worker is in the `Failed` state
     pub fn is_failed(&self) -> bool {
-        self.status_tx.borrow().worker_state == WorkerState::Failed
+        self.status_rx.borrow().worker_state == WorkerState::Failed
     }
-}
-
-/// The `Supervisor` takes a list of `WorkerContext`, a set of `SupervisorPolicies`, and once
-/// `start()` is called, will run the workers as defined.
-pub struct Supervisor<D: WorkerDispatcher> {
-    pub label: String,
-    pub policies: SupervisorPolicies,
-    pub undispatched_workers: Vec<WorkerContext<D>>,
-    pub dispatched_workers: Vec<WorkerHandle>,
-}
-
-pub struct WorkerHandle {
-    pub task_handle: JoinHandle<Result<()>>,
-    pub status_rx: watch::Receiver<WorkerStatus>,
 }
 
 impl<D: WorkerDispatcher> Supervisor<D> {
@@ -173,8 +182,14 @@ impl<D: WorkerDispatcher> Supervisor<D> {
         }
     }
 
-    pub fn register_new_worker_context(&mut self, worker_context: WorkerContext<D>) {
+    pub fn hire_worker(&mut self, worker_context: WorkerContext<D>) {
         self.undispatched_workers.push(worker_context);
+    }
+
+    pub fn hire_workers(&mut self, worker_contexts: Vec<WorkerContext<D>>) {
+        for w in worker_contexts {
+            self.undispatched_workers.push(w);
+        }
     }
 
     pub async fn start(&mut self) {
@@ -188,11 +203,29 @@ impl<D: WorkerDispatcher> Supervisor<D> {
                 Supervisor::start_worker_supervision(label, w.status_tx, policies, worker).await
             });
             handles.push(WorkerHandle {
+                label: w.label.clone(),
                 task_handle: handle,
                 status_rx,
             });
         }
         self.dispatched_workers.extend(handles);
+    }
+
+    pub async fn fire_workers(&mut self, label_selector: &str) {
+        let to_fire: Vec<_> = self
+            .dispatched_workers
+            .iter()
+            .take_while(|w| w.label == label_selector)
+            .collect();
+        for w in to_fire {
+            w.task_handle.abort();
+        }
+    }
+
+    pub async fn fire_all(&mut self) {
+        for w in self.dispatched_workers.drain(..) {
+            w.task_handle.abort();
+        }
     }
 
     /// Starts the supervision of all workers controlled by this `Supervisor`
