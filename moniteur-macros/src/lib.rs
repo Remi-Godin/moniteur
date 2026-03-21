@@ -45,7 +45,6 @@ pub fn worker_registry(input: TokenStream) -> TokenStream {
         }
     });
 
-    // Expand the Trait implementation
     let expanded = quote! {
         impl WorkerDispatcher for #name {
             fn name(&self) -> &str {
