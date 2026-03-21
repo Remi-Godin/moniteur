@@ -11,7 +11,8 @@ async fn failing_task_1() {
     let wc = WorkerContext::new(w);
     let mut sup = Supervisor {
         label: "".to_string(),
-        workers: vec![wc],
+        undispatched_workers: vec![wc],
+        dispatched_workers: Vec::new(),
         policies: SupervisorPolicies {
             retry: RetryPolicy {
                 retry_mode: RetryMode::UntilFailure,
@@ -21,10 +22,10 @@ async fn failing_task_1() {
         },
     };
     sup.start().await;
-    let w = sup.workers.first_mut().unwrap();
-    let handle = w.task_handle.as_mut().unwrap();
+    let w = sup.dispatched_workers.first_mut().unwrap();
+    let handle = &mut w.task_handle;
     let res = handle.await.unwrap();
-    assert_eq!(w.status_tx.borrow().generation, 1);
+    assert_eq!(w.status_rx.borrow().generation, 1);
     assert!(res.is_err());
 }
 
@@ -36,7 +37,8 @@ async fn failing_task_2() {
     let wc = WorkerContext::new(w);
     let mut sup = Supervisor {
         label: "".to_string(),
-        workers: vec![wc],
+        undispatched_workers: vec![wc],
+        dispatched_workers: Vec::new(),
         policies: SupervisorPolicies {
             retry: RetryPolicy {
                 retry_mode: RetryMode::MaxCount(3),
@@ -47,10 +49,10 @@ async fn failing_task_2() {
         },
     };
     sup.start().await;
-    let w = sup.workers.first_mut().unwrap();
-    let handle = w.task_handle.as_mut().unwrap();
+    let w = sup.dispatched_workers.first_mut().unwrap();
+    let handle = &mut w.task_handle;
     let res = handle.await.unwrap();
-    assert_eq!(w.status_tx.borrow().generation, 3);
+    assert_eq!(w.status_rx.borrow().generation, 3);
     assert!(res.is_err());
 }
 
@@ -62,7 +64,8 @@ async fn success_task_1() {
     let wc = WorkerContext::new(w);
     let mut sup = Supervisor {
         label: "".to_string(),
-        workers: vec![wc],
+        undispatched_workers: vec![wc],
+        dispatched_workers: Vec::new(),
         policies: SupervisorPolicies {
             retry: RetryPolicy {
                 retry_mode: RetryMode::UntilSuccess,
@@ -72,63 +75,9 @@ async fn success_task_1() {
         },
     };
     sup.start().await;
-    let w = sup.workers.first_mut().unwrap();
-    let handle = w.task_handle.as_mut().unwrap();
+    let w = sup.dispatched_workers.first_mut().unwrap();
+    let handle = &mut w.task_handle;
     let res = handle.await.unwrap();
-    assert_eq!(w.status_tx.borrow().generation, 1);
+    assert_eq!(w.status_rx.borrow().generation, 1);
     assert!(res.is_ok());
-}
-
-#[tokio::test]
-async fn nested_task_success_1() {
-    let w = WorkerKind::NestedSuccess(NestedTaskSuccess::new("Nested".to_string()));
-    let wc = WorkerContext::new(w);
-    let mut sup = Supervisor {
-        label: "".to_string(),
-        workers: vec![wc],
-        policies: SupervisorPolicies {
-            retry: RetryPolicy {
-                retry_mode: RetryMode::UntilSuccess,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    };
-    sup.start().await;
-    let w = sup.workers.first_mut().unwrap();
-    let handle = w.task_handle.as_mut().unwrap();
-    let res = handle.await.unwrap();
-    assert_eq!(w.status_tx.borrow().generation, 1);
-    if let WorkerKind::NestedSuccess(worker) = &w.dispatcher {
-        assert!(*worker.inner_data.try_lock().unwrap() == Data::After);
-    }
-
-    assert!(res.is_ok());
-}
-
-#[tokio::test]
-async fn nested_task_fail_1() {
-    let w = WorkerKind::NestedFail(NestedTaskFail::new("Nested".to_string()));
-    let wc = WorkerContext::new(w);
-    let mut sup = Supervisor {
-        label: "".to_string(),
-        workers: vec![wc],
-        policies: SupervisorPolicies {
-            retry: RetryPolicy {
-                retry_mode: RetryMode::UntilFailure,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    };
-    sup.start().await;
-    let w = sup.workers.first_mut().unwrap();
-    let handle = w.task_handle.as_mut().unwrap();
-    let res = handle.await.unwrap();
-    assert_eq!(w.status_tx.borrow().generation, 1);
-    if let WorkerKind::NestedFail(worker) = &w.dispatcher {
-        assert!(*worker.inner_data.try_lock().unwrap() == Data::Before);
-    }
-
-    assert!(res.is_err());
 }

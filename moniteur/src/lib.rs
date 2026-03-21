@@ -22,7 +22,7 @@ pub trait Worker: Send + Sync + 'static {
     fn reset(&mut self) -> impl Future<Output = Result<()>> + Send;
 }
 
-pub trait WorkerDispatcher: Clone + Send + Sync + 'static {
+pub trait WorkerDispatcher: Send + Sync + 'static {
     fn name(&self) -> &str;
     fn init(&mut self) -> impl Future<Output = Result<()>> + Send;
     fn run(&mut self) -> impl Future<Output = Result<()>> + Send;
@@ -79,7 +79,7 @@ pub struct WorkerStatus {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub enum WorkerState {
     #[default]
-    NeverRun,
+    NeverRan,
     Initializing,
     Running,
     Reseting,
@@ -90,7 +90,7 @@ pub enum WorkerState {
 impl Display for WorkerState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let status = match self {
-            WorkerState::NeverRun => "NeverRun",
+            WorkerState::NeverRan => "NeverRan",
             WorkerState::Initializing => "Initializing",
             WorkerState::Running => "Running",
             WorkerState::Reseting => "Reseting",
@@ -103,7 +103,6 @@ impl Display for WorkerState {
 
 pub struct WorkerContext<D> {
     dispatcher: D,
-    task_handle: Option<JoinHandle<Result<()>>>,
     status_tx: watch::Sender<WorkerStatus>,
 }
 
@@ -113,7 +112,6 @@ impl<D: WorkerDispatcher> WorkerContext<D> {
         let (status_tx, _status_rx) = watch::channel(WorkerStatus::default());
         Self {
             dispatcher,
-            task_handle: None,
             status_tx,
         }
     }
@@ -155,22 +153,46 @@ impl<D: WorkerDispatcher> WorkerContext<D> {
 /// `start()` is called, will run the workers as defined.
 pub struct Supervisor<D: WorkerDispatcher> {
     pub label: String,
-    pub workers: Vec<WorkerContext<D>>,
     pub policies: SupervisorPolicies,
+    pub undispatched_workers: Vec<WorkerContext<D>>,
+    pub dispatched_workers: Vec<WorkerHandle>,
+}
+
+pub struct WorkerHandle {
+    pub task_handle: JoinHandle<Result<()>>,
+    pub status_rx: watch::Receiver<WorkerStatus>,
 }
 
 impl<D: WorkerDispatcher> Supervisor<D> {
-    pub async fn start(&mut self) {
-        for w in &mut self.workers {
-            let worker = w.dispatcher.clone();
-            let policies = self.policies.clone();
-            let status_tx = w.status_tx.clone();
-            let label = self.label.clone();
-            let handle = tokio::spawn(async move {
-                Supervisor::start_task_supervision(label, status_tx, policies, worker).await
-            });
-            w.task_handle = Some(handle);
+    pub fn new(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            policies: SupervisorPolicies::default(),
+            undispatched_workers: Vec::new(),
+            dispatched_workers: Vec::new(),
         }
+    }
+
+    pub fn register_new_worker_context(&mut self, worker_context: WorkerContext<D>) {
+        self.undispatched_workers.push(worker_context);
+    }
+
+    pub async fn start(&mut self) {
+        let mut handles = Vec::with_capacity(self.undispatched_workers.len());
+        for w in &mut self.undispatched_workers.drain(..) {
+            let policies = self.policies.clone();
+            let label = self.label.clone();
+            let worker = w.dispatcher;
+            let status_rx = w.status_tx.subscribe();
+            let handle = tokio::spawn(async move {
+                Supervisor::start_task_supervision(label, w.status_tx, policies, worker).await
+            });
+            handles.push(WorkerHandle {
+                task_handle: handle,
+                status_rx,
+            });
+        }
+        self.dispatched_workers.extend(handles);
     }
 
     /// Starts the supervision of all workers controlled by this `Supervisor`
@@ -193,11 +215,7 @@ impl<D: WorkerDispatcher> Supervisor<D> {
 
         let initial_delay_s = initial_delay_s.max(1);
         let mut curr_retry_time = initial_delay_s;
-        let span = info_span!(
-            "task_supervisor",
-            generation = tracing::field::Empty,
-            status = tracing::field::Empty
-        );
+        let span = info_span!("task_supervisor", generation = tracing::field::Empty,);
         loop {
             status_tx.send_modify(|ws| {
                 ws.generation += 1;
@@ -207,7 +225,6 @@ impl<D: WorkerDispatcher> Supervisor<D> {
 
             // Init
             status_tx.send_modify(|ws| ws.worker_state = WorkerState::Initializing);
-            span.record("status", status_tx.borrow().worker_state.to_string());
             let mut has_error = false;
             if let Err(e) = dispatcher.init().instrument(span.clone()).await {
                 has_error = true;
@@ -215,7 +232,6 @@ impl<D: WorkerDispatcher> Supervisor<D> {
             } else {
                 // Run
                 status_tx.send_modify(|ws| ws.worker_state = WorkerState::Running);
-                span.record("status", status_tx.borrow().worker_state.to_string());
                 if let Err(e) = dispatcher.run().instrument(span.clone()).await {
                     has_error = true;
                     error!(error=%e, "Task run failed");
@@ -231,7 +247,6 @@ impl<D: WorkerDispatcher> Supervisor<D> {
 
             // Reset
             status_tx.send_modify(|ws| ws.worker_state = WorkerState::Reseting);
-            span.record("status", status_tx.borrow().worker_state.to_string());
             if let Err(e) = dispatcher.reset().instrument(span.clone()).await {
                 has_error = true;
                 error!(error=%e, "Task reset failed");
