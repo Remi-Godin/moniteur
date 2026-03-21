@@ -185,7 +185,7 @@ impl<D: WorkerDispatcher> Supervisor<D> {
             let worker = w.dispatcher;
             let status_rx = w.status_tx.subscribe();
             let handle = tokio::spawn(async move {
-                Supervisor::start_task_supervision(label, w.status_tx, policies, worker).await
+                Supervisor::start_worker_supervision(label, w.status_tx, policies, worker).await
             });
             handles.push(WorkerHandle {
                 task_handle: handle,
@@ -196,8 +196,8 @@ impl<D: WorkerDispatcher> Supervisor<D> {
     }
 
     /// Starts the supervision of all workers controlled by this `Supervisor`
-    #[instrument(skip(status_tx, _policies, dispatcher))]
-    pub async fn start_task_supervision(
+    #[instrument(name = "supervisor", skip(status_tx, _policies, dispatcher))]
+    pub async fn start_worker_supervision(
         label: String,
         status_tx: watch::Sender<WorkerStatus>,
         _policies: SupervisorPolicies,
@@ -216,12 +216,11 @@ impl<D: WorkerDispatcher> Supervisor<D> {
         let initial_delay_s = initial_delay_s.max(1);
         let mut curr_retry_time = initial_delay_s;
         loop {
-            let span = info_span!("task_supervisor", generation = tracing::field::Empty,);
             status_tx.send_modify(|ws| {
                 ws.generation += 1;
                 ws.last_start = Some(Instant::now());
             });
-            span.record("generation", status_tx.borrow().generation);
+            let span = info_span!("worker", label=%dispatcher.name(), generation=%status_tx.borrow().generation);
 
             // Init
             status_tx.send_modify(|ws| ws.worker_state = WorkerState::Initializing);
