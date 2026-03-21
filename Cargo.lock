@@ -64,7 +64,7 @@ dependencies = [
 
 [[package]]
 name = "moniteur"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "moniteur-macros",
@@ -75,7 +75,7 @@ dependencies = [
 
 [[package]]
 name = "moniteur-macros"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proc-macro2",
  "quote",
