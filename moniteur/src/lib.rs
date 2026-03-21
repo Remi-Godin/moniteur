@@ -215,8 +215,8 @@ impl<D: WorkerDispatcher> Supervisor<D> {
 
         let initial_delay_s = initial_delay_s.max(1);
         let mut curr_retry_time = initial_delay_s;
-        let span = info_span!("task_supervisor", generation = tracing::field::Empty,);
         loop {
+            let span = info_span!("task_supervisor", generation = tracing::field::Empty,);
             status_tx.send_modify(|ws| {
                 ws.generation += 1;
                 ws.last_start = Some(Instant::now());
