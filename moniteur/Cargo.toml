@@ -1,0 +1,11 @@
+[package]
+name = "moniteur"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+moniteur-macros = { path = "../moniteur-macros" }
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
