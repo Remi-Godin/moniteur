@@ -4,13 +4,15 @@ pub mod worker;
 
 #[cfg(test)]
 mod test {
+    use serde::{Deserialize, Serialize};
+
     use crate::{
         supervisor::SupervisorHandle,
         worker::{RestartPolicy, Worker, WorkerSpec, WorkerState, Workload},
     };
     use std::{collections::HashMap, time::Duration};
 
-    #[derive(Clone, PartialEq, Debug)]
+    #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
     pub enum MockBehavior {
         Success { delay_ms: u64 },
         FailInit,
@@ -19,12 +21,13 @@ mod test {
         Hang,
     }
 
-    #[derive(Clone, PartialEq)]
+    #[derive(Clone, PartialEq, Serialize, Deserialize)]
     pub struct MockConfig {
         pub id: u64,
         pub behavior: MockBehavior,
     }
 
+    #[derive(Clone)]
     pub struct MockWorker;
     impl Worker for MockWorker {
         type Config = MockConfig;

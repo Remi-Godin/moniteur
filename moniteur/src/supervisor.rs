@@ -1,11 +1,43 @@
 use crate::worker::*;
 use anyhow::{Result, anyhow};
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::routing::post;
+use axum::{Json, Router};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
+
+async fn update<W>(
+    State(handle): State<SupervisorHandle<W>>,
+    Path(label): Path<String>,
+    Json(spec): Json<WorkerSpec<W::Config>>,
+) -> impl IntoResponse
+where
+    W: Worker,
+{
+    match handle.update(&label, spec).await {
+        Ok(()) => StatusCode::OK,
+        Err(e) => StatusCode::BAD_GATEWAY,
+    }
+}
+
+async fn delete<W>(
+    State(handle): State<SupervisorHandle<W>>,
+    Path(label): Path<String>,
+) -> impl IntoResponse
+where
+    W: Worker,
+{
+    match handle.delete(&label).await {
+        Ok(()) => StatusCode::OK,
+        Err(e) => StatusCode::BAD_GATEWAY,
+    }
+}
 
 enum SupervisorCommand<C> {
     /// Add or update a new entry to the manifest
@@ -25,10 +57,13 @@ enum SupervisorCommand<C> {
     Purge,
 }
 
+pub struct HttpSupervisorApi {}
+
 #[derive(Clone)]
 pub struct SupervisorHandle<W: Worker> {
     outbox: mpsc::Sender<SupervisorCommand<W::Config>>,
     supervisor_handle: Arc<JoinHandle<()>>,
+    router: Router<SupervisorHandle<W>>,
 }
 
 impl<W: Worker> SupervisorHandle<W> {
@@ -46,10 +81,12 @@ impl<W: Worker> SupervisorHandle<W> {
         let task = tokio::spawn(async move {
             supervisor.run().await;
         });
+        let router = Router::new().route("/supervisor", post(update));
 
         SupervisorHandle {
             outbox: tx,
             supervisor_handle: Arc::new(task),
+            router,
         }
     }
 

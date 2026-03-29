@@ -1,9 +1,10 @@
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use std::future::Future;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct RestartPolicy {
     pub mode: RetryMode,
     /// Initial time delay for the first retry
@@ -25,7 +26,7 @@ impl Default for RestartPolicy {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub enum RetryMode {
     #[default]
     Forever,
@@ -34,8 +35,8 @@ pub enum RetryMode {
     RetryCount(u32),
 }
 
-pub trait Worker: Send + Sync + 'static {
-    type Config: Clone + PartialEq + Send + Sync + 'static;
+pub trait Worker: Send + Sync + Clone + 'static {
+    type Config: Clone + PartialEq + Serialize + for<'de> Deserialize<'de> + Send + Sync + 'static;
     type Workload: Workload;
 
     fn init(config: Self::Config) -> impl Future<Output = Result<Self::Workload>> + Send;
@@ -45,7 +46,7 @@ pub trait Workload: Send + 'static {
     fn run(self, ctx: WorkerContext) -> impl Future<Output = Result<()>> + Send;
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct WorkerSpec<C> {
     pub restart_policy: RestartPolicy,
     pub config: C,
