@@ -35,7 +35,7 @@ pub enum RetryMode {
     RetryCount(u32),
 }
 
-pub trait Worker: Send + Sync + Clone + 'static {
+pub trait Worker: Send + Sync + 'static {
     type Config: Clone + PartialEq + Serialize + for<'de> Deserialize<'de> + Send + Sync + 'static;
     type Workload: Workload;
 

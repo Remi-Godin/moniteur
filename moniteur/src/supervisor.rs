@@ -3,7 +3,7 @@ use anyhow::{Result, anyhow};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::routing::post;
+use axum::routing::{delete, post};
 use axum::{Json, Router};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -12,7 +12,7 @@ use tokio::task::JoinHandle;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-async fn update<W>(
+async fn update_manifest<W>(
     State(handle): State<SupervisorHandle<W>>,
     Path(label): Path<String>,
     Json(spec): Json<WorkerSpec<W::Config>>,
@@ -26,7 +26,16 @@ where
     }
 }
 
-async fn delete<W>(
+async fn get_manifest<W>(
+    State(handle): State<SupervisorHandle<W>>,
+    Path(label): Path<String>,
+) -> impl IntoResponse
+where
+    W: Worker,
+{
+}
+
+async fn delete_manifest<W>(
     State(handle): State<SupervisorHandle<W>>,
     Path(label): Path<String>,
 ) -> impl IntoResponse
@@ -44,6 +53,11 @@ enum SupervisorCommand<C> {
     UpdateManifest { label: String, spec: WorkerSpec<C> },
     /// Delete an entry from the manifest
     DeleteManifest { label: String },
+    /// Gets the desired manifest
+    GetManifest {
+        label: String,
+        reply: oneshot::Sender<Option<WorkerSpec<C>>>,
+    },
     /// Disable the supervisor (stops all workers)
     DisableSupervisor,
     /// Enable the supervisor (starts all workers)
@@ -63,7 +77,6 @@ pub struct HttpSupervisorApi {}
 pub struct SupervisorHandle<W: Worker> {
     outbox: mpsc::Sender<SupervisorCommand<W::Config>>,
     supervisor_handle: Arc<JoinHandle<()>>,
-    router: Router<SupervisorHandle<W>>,
 }
 
 impl<W: Worker> SupervisorHandle<W> {
@@ -81,12 +94,10 @@ impl<W: Worker> SupervisorHandle<W> {
         let task = tokio::spawn(async move {
             supervisor.run().await;
         });
-        let router = Router::new().route("/supervisor", post(update));
 
         SupervisorHandle {
             outbox: tx,
             supervisor_handle: Arc::new(task),
-            router,
         }
     }
 
@@ -176,6 +187,9 @@ impl<W: Worker> Supervisor<W> {
             SupervisorCommand::Purge => {
                 self.status_hub
                     .retain(|label, status| status.borrow().state != WorkerState::Terminated);
+            }
+            SupervisorCommand::GetManifest { label, reply } => {
+                reply.send(self.manifest.get(&label).cloned());
             }
         }
     }
